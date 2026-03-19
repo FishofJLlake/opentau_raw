@@ -1,0 +1,40 @@
+## What this does
+Explain what this PR does. Feel free to tag your PR with the appropriate label(s).
+
+Examples:
+|  Title               | Label               |
+|----------------------|---------------------|
+| Fixes #[issue]       | (🐛 Bug)            |
+| Adds new Feature     | (🗃️ Feature)        |
+| Optimizes something  | (⚡️ Performance)    |
+| Updates docs         | (📝 Documentation)  |
+
+## How it was tested
+Explain/show how you tested your changes.
+
+Examples:
+- Added `test_something` in `tests/test_stuff.py`.
+- Added `new_feature` and checked that training converges with policy X on dataset/environment Y.
+- Optimized `some_function`, it now runs X times faster than previously.
+
+## How to checkout & try? (for the reviewer)
+Provide a simple way for the reviewer to try out your changes.
+
+Examples:
+```bash
+pytest -sx tests/test_stuff.py::test_something
+```
+```bash
+python src/opentau/scripts/train.py --some.option=true
+```
+```bash
+opentau-train --config_path=configs/examples/pi05_training_config.json
+```
+
+## Checklist
+
+- [ ] I have added Google-style docstrings to important functions and ensured function parameters are typed.
+- [ ] My PR includes policy-related changes.
+  - [ ] If the above is checked: I have run the GPU pytests (pytest -m "gpu") and regression tests.
+
+### Note: Before submitting this PR, please read the [contributor guideline](https://github.com/TensorAuto/OpenTau/blob/main/CONTRIBUTING.md).
