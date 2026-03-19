@@ -101,12 +101,14 @@ import torch.utils
 from datasets import concatenate_datasets, load_dataset
 from einops import rearrange
 from huggingface_hub import HfApi, snapshot_download
+import pandas as pd
+from tqdm import tqdm
 from huggingface_hub.constants import REPOCARD_NAME
 from huggingface_hub.errors import RevisionNotFoundError
 
 from opentau.configs.train import TrainPipelineConfig
 from opentau.constants import HF_OPENTAU_HOME
-from opentau.datasets.compute_stats import aggregate_stats, compute_episode_stats
+from opentau.datasets.compute_stats import aggregate_stats, compute_episode_stats, get_feature_stats
 from opentau.datasets.image_writer import AsyncImageWriter, write_image
 from opentau.datasets.standard_data_format_mapping import DATA_FEATURES_NAME_MAPPING
 from opentau.datasets.utils import (
@@ -1855,6 +1857,99 @@ class LeRobotDataset(BaseDataset):
                 )
 
         return mean, std, lower, upper
+
+    def verify_and_compute_quantiles(self, normalization_mapping: dict[str, "NormalizationMode"]):
+        """Verify if quantile statistics are present for state and actions when needed,
+        and compute them from raw parquet data if missing.
+        """
+        from opentau.configs.types import FeatureType, NormalizationMode
+        
+        # 1. Identify which types (STATE, ACTION) require QUANTILE normalization
+        types_needing_quantile = []
+        for feature_type, mode in normalization_mapping.items():
+            if mode == NormalizationMode.QUANTILE:
+                types_needing_quantile.append(feature_type)
+        
+        if not types_needing_quantile:
+            return
+
+        # 2. Map standard names 'state' and 'actions' to actual dataset keys
+        # Generally 'state' maps to FeatureType.STATE and 'actions' to FeatureType.ACTION
+        standard_keys_to_check = []
+        if FeatureType.STATE in types_needing_quantile and "state" in self.meta.features:
+            standard_keys_to_check.append("state")
+        if FeatureType.ACTION in types_needing_quantile and "actions" in self.meta.features:
+            standard_keys_to_check.append("actions")
+            
+        if not standard_keys_to_check:
+            return
+
+        # Map back to original dataset keys using name_map
+        name_map = DATA_FEATURES_NAME_MAPPING[self._get_feature_mapping_key()]
+        dataset_keys_to_read = []
+        key_map = {} # standard_key -> dataset_key
+        for std_key in standard_keys_to_check:
+            dataset_key = name_map.get(std_key)
+            if dataset_key and dataset_key in self.meta.features:
+                dataset_keys_to_read.append(dataset_key)
+                key_map[std_key] = dataset_key
+        
+        if not dataset_keys_to_read:
+            return
+
+        # 3. Check which episodes are missing q01/q99 for these keys
+        episodes_to_compute = []
+        for ep_idx in self.meta.episodes:
+            stats = self.meta.episodes_stats.get(ep_idx, {})
+            needs_compute = False
+            for dataset_key in dataset_keys_to_read:
+                if dataset_key not in stats or "q01" not in stats[dataset_key] or "q99" not in stats[dataset_key]:
+                    needs_compute = True
+                    break
+            if needs_compute:
+                episodes_to_compute.append(ep_idx)
+
+        if not episodes_to_compute:
+            return
+
+        logging.info(
+            f"Forcing quantile computation for {dataset_keys_to_read} in {len(episodes_to_compute)} episodes."
+        )
+
+        # 4. Read raw parquet data and compute missing stats
+        for ep_idx in tqdm(episodes_to_compute, desc="Computing quantiles"):
+            parquet_path = self.root / self.meta.get_data_file_path(ep_idx)
+            if not parquet_path.exists():
+                logging.warning(f"Parquet file not found for episode {ep_idx}: {parquet_path}")
+                continue
+                
+            # Read only required columns
+            df = pd.read_parquet(parquet_path, columns=dataset_keys_to_read)
+            
+            ep_stats = self.meta.episodes_stats.get(ep_idx, {})
+            for dataset_key in dataset_keys_to_read:
+                data = df[dataset_key].to_numpy()
+                # Ensure data is numeric
+                if not np.issubdtype(data.dtype, np.number):
+                    # For structured types or arrays, we might need to flatten or handle differently
+                    # But for state/actions they should be numeric vectors
+                    pass
+                
+                if dataset_key not in ep_stats:
+                    ep_stats[dataset_key] = get_feature_stats(data, axis=(0,), keepdims=True)
+                else:
+                    # Supplement q01/q99
+                    q_stats = get_feature_stats(data, axis=(0,), keepdims=True, compute_quantiles=True)
+                    ep_stats[dataset_key]["q01"] = q_stats["q01"]
+                    ep_stats[dataset_key]["q99"] = q_stats["q99"]
+            
+            self.meta.episodes_stats[ep_idx] = ep_stats
+            # Persist to disk
+            write_episode_stats(ep_idx, ep_stats, self.root)
+
+        # 5. Re-aggregate global statistics
+        self.meta.stats = aggregate_stats(list(self.meta.episodes_stats.values()))
+        logging.info("Global statistics updated with computed quantiles.")
 
     def _check_feature_group_mapping(self):
         for feature, (group, indices) in self.feature2group.items():

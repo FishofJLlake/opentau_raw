@@ -355,8 +355,41 @@ class WeightedDatasetMixture:
 
         # aggregate metadata
         if not all(hasattr(ds, "meta") and ds.meta is not None for ds in datasets):
-            raise ValueError("All datasets must have a 'meta' attribute with valid metadata.")
+            # Fallback for subsets which might not have meta directly but their internal dataset does
+            for i, ds in enumerate(datasets):
+                if not hasattr(ds, "meta") and hasattr(ds, "dataset") and hasattr(ds.dataset, "meta"):
+                    datasets[i].meta = ds.dataset.meta
+        
+        if not all(hasattr(ds, "meta") and ds.meta is not None for ds in datasets):
+             raise ValueError("All datasets must have a 'meta' attribute with valid metadata.")
+
         self.meta = DatasetMixtureMetadata(cfg, [ds.meta for ds in datasets], dataset_weights)
+
+    def verify_and_compute_quantiles(self, normalization_mapping: dict[str, "NormalizationMode"]):
+        """Verify and compute quantiles for all sub-datasets and re-aggregate mixture metadata.
+        
+        Args:
+            normalization_mapping: Dictionary mapping feature types to normalization modes.
+        """
+        import torch.utils.data
+        
+        for ds in self.datasets:
+            # Handle both direct datasets and Subsets (from train/val split)
+            target_ds = ds
+            is_subset = isinstance(ds, torch.utils.data.Subset)
+            if is_subset:
+                target_ds = ds.dataset
+            
+            if hasattr(target_ds, "verify_and_compute_quantiles"):
+                target_ds.verify_and_compute_quantiles(normalization_mapping)
+                if is_subset:
+                    # Ensure the subset's meta is updated with the new stats
+                    ds.meta = target_ds.meta
+        
+        # Re-aggregate global stats for the mixture using updated sub-dataset metadata
+        metadatas = [ds.meta for ds in self.datasets]
+        self.meta = DatasetMixtureMetadata(self.cfg, metadatas, self.dataset_weights)
+        logging.info("WeightedDatasetMixture global statistics updated.")
 
     def _log_dataset_info(self) -> None:
         """Log information about all datasets in the mixture."""

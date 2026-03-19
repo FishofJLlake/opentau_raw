@@ -75,9 +75,9 @@ def test_sample_images(mock_load):
 def test_get_feature_stats_images():
     data = np.random.rand(100, 3, 32, 32)
     stats = get_feature_stats(data, axis=(0, 2, 3), keepdims=True)
-    assert "min" in stats and "max" in stats and "mean" in stats and "std" in stats and "count" in stats
+    assert "min" in stats and "max" in stats and "mean" in stats and "std" in stats and "count" in stats and "q01" in stats and "q99" in stats
     np.testing.assert_equal(stats["count"], np.array([100]))
-    assert stats["min"].shape == stats["max"].shape == stats["mean"].shape == stats["std"].shape
+    assert stats["min"].shape == stats["max"].shape == stats["mean"].shape == stats["std"].shape == stats["q01"].shape == stats["q99"].shape
 
 
 def test_get_feature_stats_axis_0_keepdims(sample_array):
@@ -86,6 +86,8 @@ def test_get_feature_stats_axis_0_keepdims(sample_array):
         "max": np.array([[7, 8, 9]]),
         "mean": np.array([[4.0, 5.0, 6.0]]),
         "std": np.array([[2.44948974, 2.44948974, 2.44948974]]),
+        "q01": np.percentile(sample_array, 1, axis=(0,), keepdims=True),
+        "q99": np.percentile(sample_array, 99, axis=(0,), keepdims=True),
         "count": np.array([3]),
     }
     result = get_feature_stats(sample_array, axis=(0,), keepdims=True)
@@ -99,6 +101,8 @@ def test_get_feature_stats_axis_1(sample_array):
         "max": np.array([3, 6, 9]),
         "mean": np.array([2.0, 5.0, 8.0]),
         "std": np.array([0.81649658, 0.81649658, 0.81649658]),
+        "q01": np.percentile(sample_array, 1, axis=(1,), keepdims=False),
+        "q99": np.percentile(sample_array, 99, axis=(1,), keepdims=False),
         "count": np.array([3]),
     }
     result = get_feature_stats(sample_array, axis=(1,), keepdims=False)
@@ -112,6 +116,8 @@ def test_get_feature_stats_no_axis(sample_array):
         "max": np.array(9),
         "mean": np.array(5.0),
         "std": np.array(2.5819889),
+        "q01": np.percentile(sample_array, 1, axis=None, keepdims=False),
+        "q99": np.percentile(sample_array, 99, axis=None, keepdims=False),
         "count": np.array([3]),
     }
     result = get_feature_stats(sample_array, axis=None, keepdims=False)
@@ -132,6 +138,8 @@ def test_get_feature_stats_single_value():
     np.testing.assert_equal(result["max"], np.array(1337))
     np.testing.assert_equal(result["mean"], np.array(1337.0))
     np.testing.assert_equal(result["std"], np.array(0.0))
+    np.testing.assert_equal(result["q01"], np.array(1337.0))
+    np.testing.assert_equal(result["q99"], np.array(1337.0))
     np.testing.assert_equal(result["count"], np.array([1]))
 
 
@@ -162,6 +170,8 @@ def test_assert_type_and_shape_valid():
                 "max": np.array([10.0]),
                 "mean": np.array([5.0]),
                 "std": np.array([2.0]),
+                "q01": np.array([1.5]),
+                "q99": np.array([9.5]),
                 "count": np.array([1]),
             }
         }
@@ -177,6 +187,8 @@ def test_assert_type_and_shape_invalid_type():
                 "max": np.array([10.0]),
                 "mean": np.array([5.0]),
                 "std": np.array([2.0]),
+                "q01": np.array([1.5]),
+                "q99": np.array([9.5]),
                 "count": np.array([1]),
             }
         }
@@ -204,6 +216,8 @@ def test_aggregate_feature_stats():
             "max": np.array([10.0]),
             "mean": np.array([5.0]),
             "std": np.array([2.0]),
+            "q01": np.array([1.5]),
+            "q99": np.array([9.5]),
             "count": np.array([1]),
         },
         {
@@ -211,6 +225,8 @@ def test_aggregate_feature_stats():
             "max": np.array([12.0]),
             "mean": np.array([6.0]),
             "std": np.array([2.5]),
+            "q01": np.array([2.5]),
+            "q99": np.array([11.5]),
             "count": np.array([1]),
         },
     ]
@@ -219,6 +235,8 @@ def test_aggregate_feature_stats():
     np.testing.assert_allclose(result["max"], np.array([12.0]))
     np.testing.assert_allclose(result["mean"], np.array([5.5]))
     np.testing.assert_allclose(result["std"], np.array([2.318405]), atol=1e-6)
+    np.testing.assert_allclose(result["q01"], np.array([2.0]))
+    np.testing.assert_allclose(result["q99"], np.array([10.5]))
     np.testing.assert_allclose(result["count"], np.array([2]))
 
 
@@ -230,10 +248,12 @@ def test_aggregate_stats():
                 "max": [10, 20, 30],
                 "mean": [5.5, 10.5, 15.5],
                 "std": [2.87, 5.87, 8.87],
+                "q01": [1.1, 2.1, 3.1],
+                "q99": [9.9, 19.9, 29.9],
                 "count": 10,
             },
-            "observation.state": {"min": 1, "max": 10, "mean": 5.5, "std": 2.87, "count": 10},
-            "extra_key_0": {"min": 5, "max": 25, "mean": 15, "std": 6, "count": 6},
+            "observation.state": {"min": 1, "max": 10, "mean": 5.5, "std": 2.87, "q01": 1.1, "q99": 9.9, "count": 10},
+            "extra_key_0": {"min": 5, "max": 25, "mean": 15, "std": 6, "q01": 5.5, "q99": 24.5, "count": 6},
         },
         {
             "observation.image": {
@@ -241,10 +261,12 @@ def test_aggregate_stats():
                 "max": [15, 10, 5],
                 "mean": [8.5, 5.5, 2.5],
                 "std": [3.42, 2.42, 1.42],
+                "q01": [2.2, 1.2, 0.2],
+                "q99": [14.8, 9.8, 4.8],
                 "count": 15,
             },
-            "observation.state": {"min": 2, "max": 15, "mean": 8.5, "std": 3.42, "count": 15},
-            "extra_key_1": {"min": 0, "max": 20, "mean": 10, "std": 5, "count": 5},
+            "observation.state": {"min": 2, "max": 15, "mean": 8.5, "std": 3.42, "q01": 2.2, "q99": 14.8, "count": 15},
+            "extra_key_1": {"min": 0, "max": 20, "mean": 10, "std": 5, "q01": 0.5, "q99": 19.5, "count": 5},
         },
     ]
 
@@ -254,6 +276,8 @@ def test_aggregate_stats():
             "max": [15, 20, 30],
             "mean": [7.3, 7.5, 7.7],
             "std": [3.5317, 4.8267, 8.5581],
+            "q01": [1.76, 1.56, 1.36],
+            "q99": [12.84, 13.84, 14.84],
             "count": 25,
         },
         "observation.state": {
@@ -261,6 +285,8 @@ def test_aggregate_stats():
             "max": 15,
             "mean": 7.3,
             "std": 3.5317,
+            "q01": 1.76,
+            "q99": 12.84,
             "count": 25,
         },
         "extra_key_0": {
@@ -268,6 +294,8 @@ def test_aggregate_stats():
             "max": 25,
             "mean": 15.0,
             "std": 6.0,
+            "q01": 5.5,
+            "q99": 24.5,
             "count": 6,
         },
         "extra_key_1": {
@@ -275,6 +303,8 @@ def test_aggregate_stats():
             "max": 20,
             "mean": 10.0,
             "std": 5.0,
+            "q01": 0.5,
+            "q99": 19.5,
             "count": 5,
         },
     }
@@ -307,4 +337,7 @@ def test_aggregate_stats():
         np.testing.assert_allclose(
             results[fkey]["std"], expected_agg_stats[fkey]["std"], atol=1e-04, rtol=1e-04
         )
+        if "q01" in expected_agg_stats[fkey]:
+            np.testing.assert_allclose(results[fkey]["q01"], expected_agg_stats[fkey]["q01"])
+            np.testing.assert_allclose(results[fkey]["q99"], expected_agg_stats[fkey]["q99"])
         np.testing.assert_allclose(results[fkey]["count"], expected_agg_stats[fkey]["count"])

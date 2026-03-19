@@ -184,6 +184,11 @@ def train(cfg: TrainPipelineConfig):
     else:
         train_dataset = make_dataset_mixture(cfg)
 
+    # Force quantile computation if needed for state/actions
+    train_dataset.verify_and_compute_quantiles(cfg.policy.normalization_mapping)
+    if cfg.val_freq > 0:
+        val_dataset.verify_and_compute_quantiles(cfg.policy.normalization_mapping)
+
     # Create environment used for evaluating checkpoints during training on simulation data.
     # On real-world data, no need to create an environment as evaluations are done outside train.py,
     eval_envs = None

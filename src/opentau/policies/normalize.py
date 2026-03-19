@@ -25,6 +25,7 @@ import sys
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from torch import Tensor, nn
 
 from opentau.configs.types import FeatureType, NormalizationMode, PolicyFeature
@@ -47,6 +48,14 @@ def warn_missing_keys(features: dict[str, PolicyFeature], batch: dict[str, Tenso
             f"{red_seq}Warning: {missing_key} was missing from the batch during {mode}.{reset_seq}",
             file=sys.stderr,
         )
+
+
+def pad_to_dim(vector: torch.Tensor, new_dim: int, pad_value: float = 0.0) -> torch.Tensor:
+    """Pads the last dimension of a vector to new_dim with pad_value."""
+    if vector.shape[-1] >= new_dim:
+        return vector[..., :new_dim]
+    pad_size = new_dim - vector.shape[-1]
+    return F.pad(vector, (0, pad_size), value=pad_value)
 
 
 def create_stats_buffers(
@@ -113,30 +122,38 @@ def create_stats_buffers(
                     "max": nn.Parameter(max, requires_grad=False),
                 }
             )
+        elif norm_mode is NormalizationMode.QUANTILE:
+            q01 = torch.ones(shape, dtype=torch.float32) * torch.inf
+            q99 = torch.ones(shape, dtype=torch.float32) * torch.inf
+            buffer = nn.ParameterDict(
+                {
+                    "q01": nn.Parameter(q01, requires_grad=False),
+                    "q99": nn.Parameter(q99, requires_grad=False),
+                }
+            )
 
         # TODO(aliberts, rcadene): harmonize this to only use one framework (np or torch)
         if stats:
-            if isinstance(stats[key]["mean"], np.ndarray):
-                if norm_mode is NormalizationMode.MEAN_STD:
-                    buffer["mean"].data = torch.from_numpy(stats[key]["mean"]).to(dtype=torch.float32)
-                    buffer["std"].data = torch.from_numpy(stats[key]["std"]).to(dtype=torch.float32)
-                elif norm_mode is NormalizationMode.MIN_MAX:
-                    buffer["min"].data = torch.from_numpy(stats[key]["min"]).to(dtype=torch.float32)
-                    buffer["max"].data = torch.from_numpy(stats[key]["max"]).to(dtype=torch.float32)
-            elif isinstance(stats[key]["mean"], torch.Tensor):
-                # Note: The clone is needed to make sure that the logic in save_pretrained doesn't see duplicated
-                # tensors anywhere (for example, when we use the same stats for normalization and
-                # unnormalization). See the logic here
-                # https://github.com/huggingface/safetensors/blob/079781fd0dc455ba0fe851e2b4507c33d0c0d407/bindings/python/py_src/safetensors/torch.py#L97.
-                if norm_mode is NormalizationMode.MEAN_STD:
-                    buffer["mean"].data = stats[key]["mean"].clone().to(dtype=torch.float32)
-                    buffer["std"].data = stats[key]["std"].clone().to(dtype=torch.float32)
-                elif norm_mode is NormalizationMode.MIN_MAX:
-                    buffer["min"].data = stats[key]["min"].clone().to(dtype=torch.float32)
-                    buffer["max"].data = stats[key]["max"].clone().to(dtype=torch.float32)
-            else:
-                type_ = type(stats[key]["mean"])
-                raise ValueError(f"np.ndarray or torch.Tensor expected, but type is '{type_}' instead.")
+            def _get_padded_stat(stat_name: str, pad_val: float) -> torch.Tensor:
+                val = stats[key][stat_name]
+                if isinstance(val, np.ndarray):
+                    t = torch.from_numpy(val).to(dtype=torch.float32)
+                elif isinstance(val, torch.Tensor):
+                    t = val.clone().to(dtype=torch.float32)
+                else:
+                    type_ = type(val)
+                    raise ValueError(f"np.ndarray or torch.Tensor expected, but type is '{type_}' instead.")
+                return pad_to_dim(t, shape[-1], pad_value=pad_val)
+
+            if norm_mode is NormalizationMode.MEAN_STD:
+                buffer["mean"].data = _get_padded_stat("mean", 0.0)
+                buffer["std"].data = _get_padded_stat("std", 1.0)
+            elif norm_mode is NormalizationMode.MIN_MAX:
+                buffer["min"].data = _get_padded_stat("min", 0.0)
+                buffer["max"].data = _get_padded_stat("max", 1.0)
+            elif norm_mode is NormalizationMode.QUANTILE:
+                buffer["q01"].data = _get_padded_stat("q01", 0.0)
+                buffer["q99"].data = _get_padded_stat("q99", 1.0)
 
         stats_buffers[key] = buffer
     return stats_buffers
@@ -232,6 +249,13 @@ class Normalize(nn.Module):
                 batch[key] = (batch[key] - min) / (max - min + EPS)
                 # normalize to [-1, 1]
                 batch[key] = batch[key] * 2 - 1
+            elif norm_mode is NormalizationMode.QUANTILE:
+                q01 = buffer["q01"]
+                q99 = buffer["q99"]
+                assert not torch.isinf(q01).any(), _no_stats_error_str("q01")
+                assert not torch.isinf(q99).any(), _no_stats_error_str("q99")
+                batch[key] = (batch[key] - q01) / (q99 - q01 + EPS)
+                batch[key] = batch[key] * 2 - 1
             else:
                 raise ValueError(norm_mode)
         return batch
@@ -312,6 +336,14 @@ class Unnormalize(nn.Module):
                     assert not torch.isinf(max).any(), _no_stats_error_str("max")
                 batch[key] = (batch[key] + 1) / 2
                 batch[key] = batch[key] * (max - min + EPS) + min
+            elif norm_mode is NormalizationMode.QUANTILE:
+                q01 = buffer["q01"]
+                q99 = buffer["q99"]
+                if not (torch.compiler.is_compiling() or torch.onnx.is_in_onnx_export()):
+                    assert not torch.isinf(q01).any(), _no_stats_error_str("q01")
+                    assert not torch.isinf(q99).any(), _no_stats_error_str("q99")
+                batch[key] = (batch[key] + 1) / 2
+                batch[key] = batch[key] * (q99 - q01 + EPS) + q01
             else:
                 raise ValueError(norm_mode)
         return batch

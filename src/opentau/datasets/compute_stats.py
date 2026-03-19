@@ -172,24 +172,29 @@ def sample_images(image_paths: list[str]) -> np.ndarray:
     return images
 
 
-def get_feature_stats(array: np.ndarray, axis: tuple, keepdims: bool) -> dict[str, np.ndarray]:
-    """Compute statistical measures (min, max, mean, std, count) for an array.
+def get_feature_stats(array: np.ndarray, axis: tuple, keepdims: bool, compute_quantiles: bool = True) -> dict[str, np.ndarray]:
+    """Compute statistical measures (min, max, mean, std, count, optionally quantiles) for an array.
 
     Args:
         array: Input numpy array to compute statistics over.
         axis: Axes along which to compute statistics.
         keepdims: Whether to keep reduced dimensions.
+        compute_quantiles: Whether to compute 1st and 99th percentiles.
 
     Returns:
-        Dictionary containing 'min', 'max', 'mean', 'std', and 'count' statistics.
+        Dictionary containing the computed statistics.
     """
-    return {
+    stats = {
         "min": np.min(array, axis=axis, keepdims=keepdims),
         "max": np.max(array, axis=axis, keepdims=keepdims),
         "mean": np.mean(array, axis=axis, keepdims=keepdims),
         "std": np.std(array, axis=axis, keepdims=keepdims),
         "count": np.array([len(array)]),
     }
+    if compute_quantiles:
+        stats["q01"] = np.percentile(array, 1, axis=axis, keepdims=keepdims)
+        stats["q99"] = np.percentile(array, 99, axis=axis, keepdims=keepdims)
+    return stats
 
 
 def compute_episode_stats(
@@ -230,6 +235,8 @@ def compute_episode_stats(
                     "max": np.ones((c, 1, 1), dtype=np.float64),
                     "mean": np.full((c, 1, 1), 0.5, dtype=np.float64),
                     "std": np.full((c, 1, 1), 0.5, dtype=np.float64),
+                    "q01": np.zeros((c, 1, 1), dtype=np.float64),
+                    "q99": np.ones((c, 1, 1), dtype=np.float64),
                     "count": np.array([n_frames]),
                 }
             else:
@@ -237,7 +244,9 @@ def compute_episode_stats(
                 ep_ft_array = sample_images(image_paths)  # image_paths is list[str]
                 axes_to_reduce = (0, 2, 3)  # keep channel dim
                 keepdims = True
-                ep_stats[key] = get_feature_stats(ep_ft_array, axis=axes_to_reduce, keepdims=keepdims)
+                ep_stats[key] = get_feature_stats(
+                    ep_ft_array, axis=axes_to_reduce, keepdims=keepdims, compute_quantiles=False
+                )
                 # normalize and remove batch dim for images
                 ep_stats[key] = {
                     k: v if k == "count" else np.squeeze(v / 255.0, axis=0) for k, v in ep_stats[key].items()
@@ -246,7 +255,11 @@ def compute_episode_stats(
             ep_ft_array = data if isinstance(data, np.ndarray) else np.asarray(data)
             axes_to_reduce = (0,)  # compute stats over the first axis
             keepdims = ep_ft_array.ndim == 1  # keep as np.array
-            ep_stats[key] = get_feature_stats(ep_ft_array, axis=axes_to_reduce, keepdims=keepdims)
+            # Only compute quantiles for state and action features
+            compute_quantiles = key in ["state", "action", "actions"]
+            ep_stats[key] = get_feature_stats(
+                ep_ft_array, axis=axes_to_reduce, keepdims=keepdims, compute_quantiles=compute_quantiles
+            )
 
     return ep_stats
 
@@ -296,6 +309,11 @@ def aggregate_feature_stats(
     """
     means = np.stack([s["mean"] for s in stats_ft_list])
     variances = np.stack([s["std"] ** 2 for s in stats_ft_list])
+    
+    has_quantiles = "q01" in stats_ft_list[0]
+    if has_quantiles:
+        q01s = np.stack([s["q01"] for s in stats_ft_list])
+        q99s = np.stack([s["q99"] for s in stats_ft_list])
 
     # if weights are provided, use them to compute the weighted mean and variance
     # otherwise, use episode counts as weights
@@ -319,13 +337,23 @@ def aggregate_feature_stats(
     weighted_variances = (variances + delta_means**2) * counts
     total_variance = weighted_variances.sum(axis=0) / total_count
 
-    return {
+    res = {
         "min": np.min(np.stack([s["min"] for s in stats_ft_list]), axis=0),
         "max": np.max(np.stack([s["max"] for s in stats_ft_list]), axis=0),
         "mean": total_mean,
         "std": np.sqrt(total_variance),
         "count": total_count,
     }
+
+    if has_quantiles:
+        weighted_q01s = q01s * counts
+        total_q01 = weighted_q01s.sum(axis=0) / total_count
+        weighted_q99s = q99s * counts
+        total_q99 = weighted_q99s.sum(axis=0) / total_count
+        res["q01"] = total_q01
+        res["q99"] = total_q99
+
+    return res
 
 
 def aggregate_stats(
